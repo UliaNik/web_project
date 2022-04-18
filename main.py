@@ -1,7 +1,7 @@
 import logging
 import sqlite3
-from telegram.ext import Updater, MessageHandler, Filters, CommandHandler
-from time import localtime, strftime
+from telegram.ext import Updater, MessageHandler, Filters, CommandHandler, ConversationHandler
+import datetime
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.DEBUG
 )
@@ -68,16 +68,47 @@ def unset(update, context):
 
 
 def create_task(update, context):
-    task_name = ''
+    update.message.reply_text(
+        "Давайте создадим новую задачу!\n"
+        "Если вы передумаете, используйте команду /stop.\n"
+        "Как называется задача?")
+    return 1
+
+
+def first_response(update, context):
+    task_name = update.message.text
+
+    update.message.reply_text(
+        f'Когда нужно выполнять задание "{task_name}"?')
+    return 2
+
+
+def second_response(update, context):
+    given_time = update.message.text
+    logger.info(given_time)
+    create_task(update, context, task_name, given_time)
+    update.message.reply_text("Задача создана!")
+    return ConversationHandler.END
+
+
+def stop(update, context):
+    update.message.reply_text("Всего доброго!")
+    return ConversationHandler.END
+
+
+def create_task1(update, context):
+    task_name = 'task'
     task_type = ''
     task_set_time = ''
-    task_do_time = ''
+    task_do_time = datetime.datetime.strptime('12:26', '%H:%M')
     task_is_finished = 0
     con = sqlite3.connect("tasks_db.sqlite")
     cur = con.cursor()
     cur.execute("""INSERT INTO tasks(name,type,set_time,do_time,is_finished) 
-                   VALUES(?,?,?,?,?)""", (task_name, task_type, task_set_time, task_do_time, task_is_finished))
+                   VALUES(?,?,?,?,?)""", (task_name, task_type, task_set_time, str(task_do_time), task_is_finished))
     con.close()
+    chat_id = update.message.chat_id
+    context.job_queue.run_daily(remind, task_do_time, context=chat_id, name=task_name)
 
 
 def finish_task(update, context):
@@ -110,10 +141,31 @@ def delete_task(update, context):
     con.close()
 
 
+def unfinished_tasks(update, context):
+    period = context.args[0]
+    if period == 'today':
+        time_2 = datetime.date.today()
+        time_1 = datetime.date.today() - datetime.timedelta(days=1)
+    con = sqlite3.connect("tasks_db.sqlite")
+    cur = con.cursor()
+    result = cur.execute("""SELECT name, do_time from tasks
+                   WHERE ? < do_time < ?""", (time_1, time_2)).fetchall()
+    con.close()
+    for elem in result:
+        update.message.reply_text(elem)
+
+
+def remind(context):
+    job = context.job
+    context.bot.send_message(job.context, text=f'Напоминаю о задаче: {job.name}')
+
+
 def main():
     updater = Updater('5128752008:AAHRm2yBZ9mZq8DTtvFBQXZe9Atd7I8R7xw')
     dp = updater.dispatcher
     dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("create_task", create_task))
+    dp.add_handler(CommandHandler("unfinished_tasks", unfinished_tasks))
     dp.add_handler(CommandHandler("set", set_timer,
                                   pass_args=True,
                                   pass_job_queue=True,
@@ -121,6 +173,25 @@ def main():
     dp.add_handler(CommandHandler("unset", unset,
                                   pass_chat_data=True)
                    )
+    conv_handler = ConversationHandler(
+        # Точка входа в диалог.
+        # В данном случае — команда /start. Она задаёт первый вопрос.
+        entry_points=[CommandHandler('create_task', create_task)],
+
+        # Состояние внутри диалога.
+        # Вариант с двумя обработчиками, фильтрующими текстовые сообщения.
+        states={
+            # Функция читает ответ на первый вопрос и задаёт второй.
+            1: [MessageHandler(Filters.text & ~Filters.command, first_response)],
+            # Функция читает ответ на второй вопрос и завершает диалог.
+            2: [MessageHandler(Filters.text & ~Filters.command, second_response)]
+        },
+
+        # Точка прерывания диалога. В данном случае — команда /stop.
+        fallbacks=[CommandHandler('stop', stop)]
+    )
+
+    dp.add_handler(conv_handler)
     updater.start_polling()
     updater.idle()
 
