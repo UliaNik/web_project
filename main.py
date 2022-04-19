@@ -76,18 +76,18 @@ def create_task(update, context):
 
 
 def first_response(update, context):
-    task_name = update.message.text
-
+    context.user_data['task_name'] = update.message.text
     update.message.reply_text(
-        f'Когда нужно выполнять задание "{task_name}"?')
+        f"Когда нужно выполнять задание {context.user_data['task_name']}?")
     return 2
 
 
 def second_response(update, context):
+    task_name = context.user_data['task_name']
     given_time = update.message.text
     logger.info(given_time)
+    update.message.reply_text(f"Задача {task_name} создана!")
     create_task(update, context, task_name, given_time)
-    update.message.reply_text("Задача создана!")
     return ConversationHandler.END
 
 
@@ -96,7 +96,7 @@ def stop(update, context):
     return ConversationHandler.END
 
 
-def create_task1(update, context):
+def create_task1(update, context, task_name, given_time):
     task_name = 'task'
     task_type = ''
     task_set_time = ''
@@ -164,7 +164,6 @@ def main():
     updater = Updater('5128752008:AAHRm2yBZ9mZq8DTtvFBQXZe9Atd7I8R7xw')
     dp = updater.dispatcher
     dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("create_task", create_task))
     dp.add_handler(CommandHandler("unfinished_tasks", unfinished_tasks))
     dp.add_handler(CommandHandler("set", set_timer,
                                   pass_args=True,
@@ -182,9 +181,9 @@ def main():
         # Вариант с двумя обработчиками, фильтрующими текстовые сообщения.
         states={
             # Функция читает ответ на первый вопрос и задаёт второй.
-            1: [MessageHandler(Filters.text & ~Filters.command, first_response)],
+            1: [MessageHandler(Filters.text & ~Filters.command, first_response, pass_user_data=True)],
             # Функция читает ответ на второй вопрос и завершает диалог.
-            2: [MessageHandler(Filters.text & ~Filters.command, second_response)]
+            2: [MessageHandler(Filters.text & ~Filters.command, second_response, pass_user_data=True)]
         },
 
         # Точка прерывания диалога. В данном случае — команда /stop.
