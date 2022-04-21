@@ -1,6 +1,7 @@
 import logging
 import sqlite3
-from telegram.ext import Updater, MessageHandler, Filters, CommandHandler, ConversationHandler
+from telegram.ext import Updater, MessageHandler, Filters, CommandHandler, ConversationHandler, PollHandler
+from telegram import ReplyKeyboardMarkup, Poll
 import datetime
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.DEBUG
@@ -9,6 +10,34 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 TOKEN = 'BOT_TOKEN'
+
+DAYS_OF_WEEK = {'Понедельник': 0, "Вторник": 1, "Среда": 2, "Четверг": 3,
+                "Пятница": 4, "Суббота": 5, "Воскресенье": 6}
+
+task_types_keyboard = [['Разовая', 'Регулярная']]
+markup_1 = ReplyKeyboardMarkup(task_types_keyboard, one_time_keyboard=True)
+how_regularly_keyboard = [['Каждый день', 'В определённые дни недели', 'Каждый месяц']]
+markup_2 = ReplyKeyboardMarkup(how_regularly_keyboard, one_time_keyboard=True)
+
+
+def get_chat_id(update, context):
+    chat_id = -1
+    if update.message is not None:
+        chat_id = update.message.chat.id
+    elif update.callback_query is not None:
+        chat_id = update.callback_query.message.chat.id
+    elif update.poll is not None:
+        chat_id = context.bot_data[update.poll.id]
+    return chat_id
+
+
+def get_answers(update):
+    options = update.poll.options
+    answers = []
+    for option in options:
+        if option.voter_count == 1:
+            answers.append(option.text)
+    return answers
 
 
 def start(update, context):
@@ -23,6 +52,8 @@ def start(update, context):
                             type TEXT,
                             set_time TEXT,
                             do_time TEXT,
+                            week_days TEXT,
+                            finish_time TEXT,
                             is_finished INTEGER);""")
 
 
@@ -78,29 +109,83 @@ def create_task(update, context):
 def first_response(update, context):
     context.user_data['task_name'] = update.message.text
     update.message.reply_text(
-        f"Когда нужно выполнять задание {context.user_data['task_name']}?")
+        f"Эта задача разовая или регулярная?",
+        reply_markup=markup_1)
     return 2
 
 
 def second_response(update, context):
-    task_name = context.user_data['task_name']
-    given_time = update.message.text
-    logger.info(given_time)
-    update.message.reply_text(f"Задача {task_name} создана!")
-    create_task(update, context, task_name, given_time)
-    return ConversationHandler.END
+    context.user_data['task_type'] = update.message.text
+    if context.user_data['task_type'] == 'Разовая':
+        update.message.reply_text(
+            f"Когда нужно выполнить {context.user_data['task_name']}?\n"
+            f"Введите дату.")
+        return 3
+    else:
+        update.message.reply_text(
+            f"Как часто нужно выполнять {context.user_data['task_name']}?",
+            reply_markup=markup_2)
+    return 4
+
+
+def third_response(update, context):
+    context.user_data['task_finish_time'] = update.message.text
+    update.message.reply_text(
+        f"Во сколько нужно выполнить {context.user_data['task_name']}?\n"
+        f"Введите время.")
+    return 2
+
+
+def fourth_response(update, context):
+    context.user_data['task_do_time'] = update.message.text
+    if context.user_data['task_do_time'] == 'В определённые дни недели':
+        days_of_week_poll(update, context)
+    if context.user_data['task_do_time'] == 'Каждый месяц':
+        context.user_data['task_regularity'] = 'monthly'
+        update.message.reply_text(
+            f"По каким числам нужно выполнять {context.user_data['task_name']}?\n"
+            f"Введите даты через пробел.")
+        return 2
+    else:
+        context.user_data['task_regularity'] = 'daily'
+    return 2
+
+
+def days_of_week_poll(update, context):
+    question = f"По каким дням нужно выполнять {context.user_data['task_name']}?"
+    options = ['Понедельник', "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+    context.bot.send_poll(chat_id=get_chat_id(update, context),
+                          question=question, options=options, type=Poll.REGULAR,
+                          allows_multiple_answers=True)
+    days = get_answers(update)
+    context.user_data['task_week_days'] = str([DAYS_OF_WEEK[x] for x in days])
+
+
+def fifth_response(update, context):
+    context.user_data['task_do_time'] = update.message.text
+    if context.user_data['task_type'] == 'Цель':
+        update.message.reply_text(
+            f"До какого срока нужно выполнять {context.user_data['task_name']}?\n"
+            f"Введите дату.")
+        return 3
+    update.message.reply_text(
+        f"Какого типа эта задача {context.user_data['task_name']}?",
+        reply_markup=markup_1)
+    return 2
 
 
 def stop(update, context):
-    update.message.reply_text("Всего доброго!")
+    context.user_data['task_finish_time'] = context.user_data.get('task_finish_time') + ' ' + update.message.text
+    create_task_in_db(update, context)
+    update.message.reply_text("Задача создана!")
     return ConversationHandler.END
 
 
-def create_task1(update, context, task_name, given_time):
-    task_name = 'task'
-    task_type = ''
+def create_task_in_db(update, context):
+    task_name = context.user_data['task_name']
+    task_type = context.user_data['task_type']
     task_set_time = ''
-    task_do_time = datetime.datetime.strptime('12:26', '%H:%M')
+    task_do_time = datetime.datetime.strptime(context.user_data['task_do_time'], '%H:%M')
     task_is_finished = 0
     con = sqlite3.connect("tasks_db.sqlite")
     cur = con.cursor()
