@@ -1,6 +1,6 @@
 import logging
 import sqlite3
-from telegram.ext import Updater, MessageHandler, Filters, CommandHandler, ConversationHandler, PollHandler
+from telegram.ext import Updater, MessageHandler, Filters, CommandHandler, ConversationHandler, PollAnswerHandler
 from telegram import ReplyKeyboardMarkup, Poll
 import datetime
 logging.basicConfig(
@@ -18,6 +18,8 @@ task_types_keyboard = [['Разовая', 'Регулярная']]
 markup_1 = ReplyKeyboardMarkup(task_types_keyboard, one_time_keyboard=True)
 how_regularly_keyboard = [['Каждый день', 'В определённые дни недели', 'Каждый месяц']]
 markup_2 = ReplyKeyboardMarkup(how_regularly_keyboard, one_time_keyboard=True)
+task_types_2_keyboard = [['Конечная', 'Бесконечная']]
+markup_3 = ReplyKeyboardMarkup(task_types_2_keyboard, one_time_keyboard=True)
 
 
 def get_chat_id(update, context):
@@ -49,7 +51,8 @@ def start(update, context):
     cur.execute("""CREATE TABLE IF NOT EXISTS tasks(
                             id INTEGER PRIMARY KEY,
                             name TEXT,
-                            type TEXT,
+                            is_regular INTEGER,
+                            is_endless INTEGER,
                             set_time TEXT,
                             do_time TEXT,
                             week_days TEXT,
@@ -98,7 +101,7 @@ def unset(update, context):
     update.message.reply_text(text)
 
 
-def create_task(update, context):
+def start_create_task(update, context):
     update.message.reply_text(
         "Давайте создадим новую задачу!\n"
         "Если вы передумаете, используйте команду /stop.\n"
@@ -106,7 +109,13 @@ def create_task(update, context):
     return 1
 
 
-def first_response(update, context):
+def stop_create_task(update, context):
+    update.message.reply_text(
+        "Задача удалена")
+    return ConversationHandler.END
+
+
+def get_name(update, context):
     context.user_data['task_name'] = update.message.text
     update.message.reply_text(
         f"Эта задача разовая или регулярная?",
@@ -114,9 +123,9 @@ def first_response(update, context):
     return 2
 
 
-def second_response(update, context):
-    context.user_data['task_type'] = update.message.text
-    if context.user_data['task_type'] == 'Разовая':
+def get_if_regular(update, context):
+    context.user_data['task_is_regular'] = update.message.text
+    if context.user_data['task_is_regular'] == 'Разовая':
         update.message.reply_text(
             f"Когда нужно выполнить {context.user_data['task_name']}?\n"
             f"Введите дату.")
@@ -125,18 +134,25 @@ def second_response(update, context):
         update.message.reply_text(
             f"Как часто нужно выполнять {context.user_data['task_name']}?",
             reply_markup=markup_2)
-    return 4
+    return 5
 
 
-def third_response(update, context):
+def get_one_date(update, context):
     context.user_data['task_finish_time'] = update.message.text
     update.message.reply_text(
         f"Во сколько нужно выполнить {context.user_data['task_name']}?\n"
         f"Введите время.")
-    return 2
+    return 4
 
 
-def fourth_response(update, context):
+def get_one_time(update, context):
+    context.user_data['task_finish_time'] = context.user_data.get('task_finish_time') + ' ' + update.message.text
+    create_task_in_db(update, context)
+    update.message.reply_text("Задача создана!")
+    return ConversationHandler.END
+
+
+def get_reg_regularity(update, context):
     context.user_data['task_do_time'] = update.message.text
     if context.user_data['task_do_time'] == 'В определённые дни недели':
         days_of_week_poll(update, context)
@@ -145,37 +161,77 @@ def fourth_response(update, context):
         update.message.reply_text(
             f"По каким числам нужно выполнять {context.user_data['task_name']}?\n"
             f"Введите даты через пробел.")
-        return 2
+        return 6
     else:
         context.user_data['task_regularity'] = 'daily'
-    return 2
+        update.message.reply_text(
+            f"Во сколько нужно выполнять {context.user_data['task_name']}?\n"
+            f"Введите время.")
+    return 7
 
 
 def days_of_week_poll(update, context):
     question = f"По каким дням нужно выполнять {context.user_data['task_name']}?"
     options = ['Понедельник', "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
-    context.bot.send_poll(chat_id=get_chat_id(update, context),
-                          question=question, options=options, type=Poll.REGULAR,
-                          allows_multiple_answers=True)
-    days = get_answers(update)
+    message = context.bot.send_poll(chat_id=get_chat_id(update, context),
+                                    question=question, options=options, type=Poll.REGULAR,
+                                    allows_multiple_answers=True)
+
+    payload = {
+        message.poll.id: {
+            "questions": options,
+            "message_id": message.message_id,
+            "chat_id": update.effective_chat.id,
+            "answers": 0,
+        }
+    }
+    context.bot_data.update(payload)
+
+
+def receive_poll_answer(update, context):
+    answer = update.poll_answer
+    poll_id = answer.poll_id
+    questions = context.bot_data[poll_id]["questions"]
+    selected_options = answer.option_ids
+    days = []
+    for question_id in selected_options:
+        days.append(questions[question_id])
     context.user_data['task_week_days'] = str([DAYS_OF_WEEK[x] for x in days])
 
 
-def fifth_response(update, context):
+def get_reg_month_dates(update, context):
     context.user_data['task_do_time'] = update.message.text
-    if context.user_data['task_type'] == 'Цель':
-        update.message.reply_text(
-            f"До какого срока нужно выполнять {context.user_data['task_name']}?\n"
-            f"Введите дату.")
-        return 3
     update.message.reply_text(
-        f"Какого типа эта задача {context.user_data['task_name']}?",
-        reply_markup=markup_1)
-    return 2
+        f"Во сколько нужно выполнять {context.user_data['task_name']}?\n"
+        f"Введите время.")
+    return 7
 
 
-def stop(update, context):
-    context.user_data['task_finish_time'] = context.user_data.get('task_finish_time') + ' ' + update.message.text
+def get_reg_time(update, context):
+    if context.user_data['task_do_time'] == 'Каждый месяц':
+        context.user_data['task_do_time'] = context.user_data.get('task_do_time') + ' ' + update.message.text
+    else:
+        context.user_data['task_do_time'] = update.message.text
+    update.message.reply_text(
+        f"Эта задача конечная или бесконечная?", reply_markup=markup_3)
+    return 8
+
+
+def get_if_endless(update, context):
+    context.user_data['task_is_endless'] = update.message.text
+    if context.user_data['task_is_endless'] == 'Конечная':
+        update.message.reply_text(
+            f"Когда нужно перестать выполнять {context.user_data['task_name']}?\n"
+            f"Введите дату.")
+        return 9
+    else:
+        create_task_in_db(update, context)
+        update.message.reply_text("Задача создана!")
+        return ConversationHandler.END
+
+
+def get_reg_end_date(update, context):
+    context.user_data['task_finish_time'] = update.message.text
     create_task_in_db(update, context)
     update.message.reply_text("Задача создана!")
     return ConversationHandler.END
@@ -183,9 +239,13 @@ def stop(update, context):
 
 def create_task_in_db(update, context):
     task_name = context.user_data['task_name']
-    task_type = context.user_data['task_type']
+    task_is_regular = 1 if context.user_data['task_is_regular'] == 'Регулярная' else 0
+    task_is_endless = 1 if context.user_data.get('task_is_endless', '') == 'Бесконечная' else 0
     task_set_time = ''
-    task_do_time = datetime.datetime.strptime(context.user_data['task_do_time'], '%H:%M')
+    task_regularity = context.user_data.get('task_regularity', '')
+    if task_regularity == 'monthly':
+        task_do_time = datetime.datetime.strptime(context.user_data['task_do_time'], '%H:%M')
+    task_finish_time = datetime.datetime.strptime(context.user_data['task_finish_time'], '%d.%m.%y %H:%M')
     task_is_finished = 0
     con = sqlite3.connect("tasks_db.sqlite")
     cur = con.cursor()
@@ -257,22 +317,24 @@ def main():
     dp.add_handler(CommandHandler("unset", unset,
                                   pass_chat_data=True)
                    )
+    dp.add_handler(PollAnswerHandler(receive_poll_answer))
     conv_handler = ConversationHandler(
-        # Точка входа в диалог.
-        # В данном случае — команда /start. Она задаёт первый вопрос.
-        entry_points=[CommandHandler('create_task', create_task)],
 
-        # Состояние внутри диалога.
-        # Вариант с двумя обработчиками, фильтрующими текстовые сообщения.
+        entry_points=[CommandHandler('create_task', start_create_task)],
+
         states={
-            # Функция читает ответ на первый вопрос и задаёт второй.
-            1: [MessageHandler(Filters.text & ~Filters.command, first_response, pass_user_data=True)],
-            # Функция читает ответ на второй вопрос и завершает диалог.
-            2: [MessageHandler(Filters.text & ~Filters.command, second_response, pass_user_data=True)]
+            1: [MessageHandler(Filters.text & ~Filters.command, get_name, pass_user_data=True)],
+            2: [MessageHandler(Filters.text & ~Filters.command, get_if_regular, pass_user_data=True)],
+            3: [MessageHandler(Filters.text & ~Filters.command, get_one_date, pass_user_data=True)],
+            4: [MessageHandler(Filters.text & ~Filters.command, get_one_time, pass_user_data=True)],
+            5: [MessageHandler(Filters.text & ~Filters.command, get_reg_regularity, pass_user_data=True)],
+            6: [MessageHandler(Filters.text & ~Filters.command, get_reg_month_dates, pass_user_data=True)],
+            7: [MessageHandler(Filters.text & ~Filters.command, get_reg_time, pass_user_data=True)],
+            8: [MessageHandler(Filters.text & ~Filters.command, get_if_endless, pass_user_data=True)],
+            9: [MessageHandler(Filters.text & ~Filters.command, get_reg_end_date, pass_user_data=True)],
         },
 
-        # Точка прерывания диалога. В данном случае — команда /stop.
-        fallbacks=[CommandHandler('stop', stop)]
+        fallbacks=[CommandHandler('stop', stop_create_task)]
     )
 
     dp.add_handler(conv_handler)
