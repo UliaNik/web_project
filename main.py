@@ -53,9 +53,10 @@ def start(update, context):
                             name TEXT,
                             is_regular INTEGER,
                             is_endless INTEGER,
+                            regularity TEXT,
                             set_time TEXT,
                             do_time TEXT,
-                            week_days TEXT,
+                            days TEXT,
                             finish_time TEXT,
                             is_finished INTEGER);""")
 
@@ -154,19 +155,20 @@ def get_one_time(update, context):
 
 def get_reg_regularity(update, context):
     context.user_data['task_do_time'] = update.message.text
-    if context.user_data['task_do_time'] == 'В определённые дни недели':
-        days_of_week_poll(update, context)
     if context.user_data['task_do_time'] == 'Каждый месяц':
         context.user_data['task_regularity'] = 'monthly'
         update.message.reply_text(
             f"По каким числам нужно выполнять {context.user_data['task_name']}?\n"
             f"Введите даты через пробел.")
         return 6
+    if context.user_data['task_do_time'] == 'В определённые дни недели':
+        days_of_week_poll(update, context)
+        context.user_data['task_regularity'] = 'week_daily'
     else:
         context.user_data['task_regularity'] = 'daily'
-        update.message.reply_text(
-            f"Во сколько нужно выполнять {context.user_data['task_name']}?\n"
-            f"Введите время.")
+    update.message.reply_text(
+        f"Во сколько нужно выполнять {context.user_data['task_name']}?\n"
+        f"Введите время.")
     return 7
 
 
@@ -196,11 +198,11 @@ def receive_poll_answer(update, context):
     days = []
     for question_id in selected_options:
         days.append(questions[question_id])
-    context.user_data['task_week_days'] = str([DAYS_OF_WEEK[x] for x in days])
+    context.user_data['task_days'] = str([DAYS_OF_WEEK[x] for x in days])
 
 
 def get_reg_month_dates(update, context):
-    context.user_data['task_do_time'] = update.message.text
+    context.user_data['task_days'] = update.message.text
     update.message.reply_text(
         f"Во сколько нужно выполнять {context.user_data['task_name']}?\n"
         f"Введите время.")
@@ -241,19 +243,31 @@ def create_task_in_db(update, context):
     task_name = context.user_data['task_name']
     task_is_regular = 1 if context.user_data['task_is_regular'] == 'Регулярная' else 0
     task_is_endless = 1 if context.user_data.get('task_is_endless', '') == 'Бесконечная' else 0
-    task_set_time = ''
+    task_set_time = datetime.datetime.now()
     task_regularity = context.user_data.get('task_regularity', '')
-    if task_regularity == 'monthly':
-        task_do_time = datetime.datetime.strptime(context.user_data['task_do_time'], '%H:%M')
+    task_days = context.user_data.get('task_days', '')
+    task_do_time = datetime.datetime.strptime(context.user_data['task_do_time'], '%H:%M')
     task_finish_time = datetime.datetime.strptime(context.user_data['task_finish_time'], '%d.%m.%y %H:%M')
     task_is_finished = 0
     con = sqlite3.connect("tasks_db.sqlite")
     cur = con.cursor()
-    cur.execute("""INSERT INTO tasks(name,type,set_time,do_time,is_finished) 
-                   VALUES(?,?,?,?,?)""", (task_name, task_type, task_set_time, str(task_do_time), task_is_finished))
+    cur.execute("""INSERT INTO tasks(name,is_regular,is_endless,regularity,
+                   set_time,do_time,days,finish_time,is_finished) 
+                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                (task_name, task_is_regular, task_is_endless, task_regularity,
+                 str(task_set_time), str(task_do_time), task_days, str(task_finish_time),
+                 task_is_finished))
     con.close()
     chat_id = update.message.chat_id
-    context.job_queue.run_daily(remind, task_do_time, context=chat_id, name=task_name)
+    if task_regularity == 'monthly':
+        dates = [int(x) for x in task_days.split()]
+        for date in dates:
+            context.job_queue.run_monthly(remind, task_do_time, day=date, context=chat_id, name=task_name)
+    elif task_regularity == 'week_daily':
+        week_days = tuple(int(x) for x in task_days)
+        context.job_queue.run_daily(remind, task_do_time, days=week_days, context=chat_id, name=task_name)
+    else:
+        context.job_queue.run_daily(remind, task_do_time, context=chat_id, name=task_name)
 
 
 def finish_task(update, context):
