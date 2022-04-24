@@ -246,8 +246,14 @@ def create_task_in_db(update, context):
     task_set_time = datetime.datetime.now()
     task_regularity = context.user_data.get('task_regularity', '')
     task_days = context.user_data.get('task_days', '')
-    task_do_time = datetime.datetime.strptime(context.user_data['task_do_time'], '%H:%M')
-    task_finish_time = datetime.datetime.strptime(context.user_data['task_finish_time'], '%d.%m.%y %H:%M')
+    if task_is_regular:
+        task_do_time = datetime.datetime.strptime(context.user_data['task_do_time'], '%H:%M')
+    else:
+        task_do_time = ''
+    if not task_is_endless:
+        task_finish_time = datetime.datetime.strptime(context.user_data['task_finish_time'], '%d.%m.%y %H:%M')
+    else:
+        task_finish_time = ''
     task_is_finished = 0
     con = sqlite3.connect("tasks_db.sqlite")
     cur = con.cursor()
@@ -259,15 +265,18 @@ def create_task_in_db(update, context):
                  task_is_finished))
     con.close()
     chat_id = update.message.chat_id
-    if task_regularity == 'monthly':
-        dates = [int(x) for x in task_days.split()]
-        for date in dates:
-            context.job_queue.run_monthly(remind, task_do_time, day=date, context=chat_id, name=task_name)
-    elif task_regularity == 'week_daily':
-        week_days = tuple(int(x) for x in task_days)
-        context.job_queue.run_daily(remind, task_do_time, days=week_days, context=chat_id, name=task_name)
+    if task_is_regular:
+        if task_regularity == 'monthly':
+            dates = [int(x) for x in task_days.split()]
+            for date in dates:
+                context.job_queue.run_monthly(remind, task_do_time, day=date, context=chat_id, name=task_name)
+        elif task_regularity == 'week_daily':
+            week_days = tuple(int(x) for x in task_days)
+            context.job_queue.run_daily(remind, task_do_time, days=week_days, context=chat_id, name=task_name)
+        else:
+            context.job_queue.run_daily(remind, task_do_time, context=chat_id, name=task_name)
     else:
-        context.job_queue.run_daily(remind, task_do_time, context=chat_id, name=task_name)
+        context.job_queue.run_once(remind, task_finish_time, context=chat_id, name=task_name)
 
 
 def finish_task(update, context):
