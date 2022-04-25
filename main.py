@@ -257,30 +257,39 @@ def create_task_in_db(update, context):
     task_is_finished = 0
     con = sqlite3.connect("tasks_db.sqlite")
     cur = con.cursor()
-    cur.execute("""INSERT INTO tasks(name,is_regular,is_endless,regularity,
-                   set_time,do_time,days,finish_time,is_finished) 
-                   VALUES(?,?,?,?,?,?,?,?,?)""",
-                (task_name, task_is_regular, task_is_endless, task_regularity,
-                 str(task_set_time), str(task_do_time), task_days, str(task_finish_time),
-                 task_is_finished))
-    con.close()
-    chat_id = update.message.chat_id
-    if task_is_regular:
-        if task_regularity == 'monthly':
-            dates = [int(x) for x in task_days.split()]
-            for date in dates:
-                context.job_queue.run_monthly(remind, task_do_time, day=date, context=chat_id, name=task_name)
-        elif task_regularity == 'week_daily':
-            week_days = tuple(int(x) for x in task_days)
-            context.job_queue.run_daily(remind, task_do_time, days=week_days, context=chat_id, name=task_name)
-        else:
-            context.job_queue.run_daily(remind, task_do_time, context=chat_id, name=task_name)
+    res = cur.execute("""SELECT * from tasks
+                         WHERE name = ? AND is_finished = 0""", (task_name,)).fetchall()
+    if res:
+        update.message.reply_text("Задача с таким названием уже существует!")
+        con.close()
     else:
-        context.job_queue.run_once(remind, task_finish_time, context=chat_id, name=task_name)
+        cur.execute("""INSERT INTO tasks(name,is_regular,is_endless,regularity,
+                       set_time,do_time,days,finish_time,is_finished) 
+                       VALUES(?,?,?,?,?,?,?,?,?)""",
+                    (task_name, task_is_regular, task_is_endless, task_regularity,
+                     str(task_set_time), str(task_do_time), task_days, str(task_finish_time),
+                     task_is_finished))
+        con.close()
+        chat_id = update.message.chat_id
+        if task_is_regular:
+            if task_regularity == 'monthly':
+                dates = [int(x) for x in task_days.split()]
+                for date in dates:
+                    context.job_queue.run_monthly(remind, task_do_time, day=date, context=chat_id, name=task_name)
+            elif task_regularity == 'week_daily':
+                week_days = tuple(int(x) for x in task_days)
+                context.job_queue.run_daily(remind, task_do_time, days=week_days, context=chat_id, name=task_name)
+            else:
+                context.job_queue.run_daily(remind, task_do_time, context=chat_id, name=task_name)
+        else:
+            context.job_queue.run_once(remind, task_finish_time, context=chat_id, name=task_name)
 
 
-def finish_task(update, context):
+def finish_task(update, context):  # нужно ли?
     task_name = context.args[0]
+    job_removed = remove_job_if_exists(task_name, context)
+    text = 'Задание завершено!' if job_removed else 'У вас нет такой задачи'
+    update.message.reply_text(text)
     con = sqlite3.connect("tasks_db.sqlite")
     cur = con.cursor()
     cur.execute("""UPDATE tasks
@@ -302,6 +311,9 @@ def change_task(update, context):
 
 def delete_task(update, context):
     task_name = context.args[0]
+    job_removed = remove_job_if_exists(task_name, context)
+    text = 'Задание удалено!' if job_removed else 'У вас нет такой задачи'
+    update.message.reply_text(text)
     con = sqlite3.connect("tasks_db.sqlite")
     cur = con.cursor()
     cur.execute("""DELETE from tasks
@@ -310,15 +322,15 @@ def delete_task(update, context):
 
 
 def unfinished_tasks(update, context):
-    period = context.args[0]
-    if period == 'today':
-        time_2 = datetime.date.today()
-        time_1 = datetime.date.today() - datetime.timedelta(days=1)
+    period = context.args[0] + ' 23:59'
+    time_1 = datetime.date.today() - datetime.timedelta(days=1)
     con = sqlite3.connect("tasks_db.sqlite")
     cur = con.cursor()
-    result = cur.execute("""SELECT name, do_time from tasks
-                   WHERE ? < do_time < ?""", (time_1, time_2)).fetchall()
-    con.close()
+    result = cur.execute("""SELECT name, finish_time from tasks
+                            WHERE datetime.datetime.strftime('%d.%m.%y %H:%M', finish_time) 
+                            BETWEEN datetime.datetime.strftime('%d.%m.%y %H:%M', ?)
+                            AND datetime.datetime.strftime('%d.%m.%y %H:%M', ?)""", (time_1, period)).fetchall()
+    con.close()  # возникнет ошибка для регулярных бесконечных задач?
     for elem in result:
         update.message.reply_text(elem)
 
