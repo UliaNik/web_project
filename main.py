@@ -3,6 +3,9 @@ import sqlite3
 from telegram.ext import Updater, MessageHandler, Filters, CommandHandler, ConversationHandler, PollAnswerHandler
 from telegram import ReplyKeyboardMarkup, Poll
 import datetime
+from dateutil.tz import gettz
+import requests
+from timezonefinder import TimezoneFinder
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.DEBUG
 )
@@ -42,6 +45,28 @@ def get_answers(update):
     return answers
 
 
+def get_user_timezone(update, context):
+    city = update.message.text
+    geocoder_request = f"http://geocode-maps.yandex.ru/1.x/?apikey=40d1649f-0493-4b70-98ba-98533de7710b&" \
+                       f"geocode={city}&format=json"
+    response = requests.get(geocoder_request)
+    if response:
+        json_response = response.json()
+        toponym = json_response["response"]["GeoObjectCollection"]["featureMember"][0]["GeoObject"]
+        toponym_address = toponym["metaDataProperty"]["GeocoderMetaData"]["text"]
+        l1, l2 = toponym["Point"]["pos"]
+        tf = TimezoneFinder()
+        tz = tf.timezone_at(lng=l1, lat=l2)
+        context.chat_data['timezone'] = tz
+        update.message.reply_text(
+            "Спасибо! Часовой пояс определён.")
+        return ConversationHandler.END
+    update.message.reply_text(
+        "Город с таким названием не найден. "
+        "Проверьте, нет ли в названии опечаток, или выберите другой, близлежащий, город.")
+    return 1
+
+
 def start(update, context):
     update.message.reply_text(
         "Здравствуйте! Я ваш персональный бот для тайм-менеджмента. Я помогу вам эффективнее распоряжаться вашим временем"
@@ -59,6 +84,11 @@ def start(update, context):
                             days TEXT,
                             finish_time TEXT,
                             is_finished INTEGER);""")
+    if not context.chat_data.get('timezone', 0):
+        update.message.reply_text(
+            "Чтобы правильно работать, мне необходимо знать Ваш часовой пояс. В каком городе вы находитесь?")
+        return 1
+    return ConversationHandler.END
 
 
 def remove_job_if_exists(name, context):
@@ -243,15 +273,17 @@ def create_task_in_db(update, context):
     task_name = context.user_data['task_name']
     task_is_regular = 1 if context.user_data['task_is_regular'] == 'Регулярная' else 0
     task_is_endless = 1 if context.user_data.get('task_is_endless', '') == 'Бесконечная' else 0
-    task_set_time = datetime.datetime.now()
+    task_set_time = datetime.datetime.now(gettz(context.chat_data['timezone']))
+    tz_f = task_set_time.isoformat()[task_set_time.isoformat().rfind('+'):]
+    print(tz_f)
     task_regularity = context.user_data.get('task_regularity', '')
     task_days = context.user_data.get('task_days', '')
     if task_is_regular:
-        task_do_time = datetime.datetime.strptime(context.user_data['task_do_time'], '%H:%M')
+        task_do_time = datetime.datetime.strptime(context.user_data['task_do_time'] + tz_f, '%H:%M').isoformat()
     else:
         task_do_time = ''
     if not task_is_endless:
-        task_finish_time = datetime.datetime.strptime(context.user_data['task_finish_time'], '%d.%m.%y %H:%M')
+        task_finish_time = datetime.datetime.strptime(context.user_data['task_finish_time'] + tz_f, '%d.%m.%y %H:%M')
     else:
         task_finish_time = ''
     task_is_finished = 0
@@ -343,7 +375,7 @@ def remind(context):
 def main():
     updater = Updater('5128752008:AAHRm2yBZ9mZq8DTtvFBQXZe9Atd7I8R7xw')
     dp = updater.dispatcher
-    dp.add_handler(CommandHandler("start", start))
+    # dp.add_handler(CommandHandler("start", start, pass_chat_data=True))
     dp.add_handler(CommandHandler("unfinished_tasks", unfinished_tasks))
     dp.add_handler(CommandHandler("set", set_timer,
                                   pass_args=True,
@@ -369,10 +401,22 @@ def main():
             9: [MessageHandler(Filters.text & ~Filters.command, get_reg_end_date, pass_user_data=True)],
         },
 
-        fallbacks=[CommandHandler('stop', stop_create_task)]
+        fallbacks=[CommandHandler('stop', stop_create_task, pass_chat_data=True)]
     )
 
     dp.add_handler(conv_handler)
+    greeting_handler = ConversationHandler(
+
+        entry_points=[CommandHandler('start', start, pass_chat_data=True)],
+
+        states={
+            1: [MessageHandler(Filters.text & ~Filters.command, get_user_timezone, pass_chat_data=True)]
+        },
+
+        fallbacks=[CommandHandler('stop', stop_create_task, pass_chat_data=True)]
+    )
+
+    dp.add_handler(greeting_handler)
     updater.start_polling()
     updater.idle()
 
