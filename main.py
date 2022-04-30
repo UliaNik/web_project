@@ -2,10 +2,15 @@ import logging
 import sqlite3
 from telegram.ext import Updater, MessageHandler, Filters, CommandHandler, ConversationHandler, PollAnswerHandler
 from telegram import ReplyKeyboardMarkup, Poll
+from dateutil.parser import *
+from dateutil.tz import *
+from datetime import *
 import datetime
 from dateutil.tz import gettz
+from dateutil import parser
 import requests
 from timezonefinder import TimezoneFinder
+import pytz
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.DEBUG
 )
@@ -13,7 +18,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 TOKEN = 'BOT_TOKEN'
-
+DEFAULT = datetime.datetime(2003, 9, 25)
 DAYS_OF_WEEK = {'Понедельник': 0, "Вторник": 1, "Среда": 2, "Четверг": 3,
                 "Пятница": 4, "Суббота": 5, "Воскресенье": 6}
 
@@ -54,9 +59,9 @@ def get_user_timezone(update, context):
         json_response = response.json()
         toponym = json_response["response"]["GeoObjectCollection"]["featureMember"][0]["GeoObject"]
         toponym_address = toponym["metaDataProperty"]["GeocoderMetaData"]["text"]
-        l1, l2 = toponym["Point"]["pos"]
+        ll = toponym["Point"]["pos"]
         tf = TimezoneFinder()
-        tz = tf.timezone_at(lng=l1, lat=l2)
+        tz = tf.timezone_at(lng=float(ll[0]), lat=float(ll[1]))
         context.chat_data['timezone'] = tz
         update.message.reply_text(
             "Спасибо! Часовой пояс определён.")
@@ -98,38 +103,6 @@ def remove_job_if_exists(name, context):
     for job in current_jobs:
         job.schedule_removal()
     return True
-
-
-def set_timer(update, context):
-    chat_id = update.message.chat_id
-    try:
-        due = int(context.args[0])
-        if due < 0:
-            update.message.reply_text('Извините, не умеем возвращаться в прошлое')
-            return
-
-        job_removed = remove_job_if_exists(str(chat_id), context)
-        context.job_queue.run_once(task, due, context=chat_id, name=str(chat_id))
-
-        text = f'Вернусь через {due} секунд!'
-        if job_removed:
-            text += ' Старая задача удалена.'
-        update.message.reply_text(text)
-
-    except (IndexError, ValueError):
-        update.message.reply_text('Использование: /set <секунд>')
-
-
-def task(context):
-    job = context.job
-    context.bot.send_message(job.context, text='КУКУ!')
-
-
-def unset(update, context):
-    chat_id = update.message.chat_id
-    job_removed = remove_job_if_exists(str(chat_id), context)
-    text = 'Таймер отменен!' if job_removed else 'У вас нет активных таймеров'
-    update.message.reply_text(text)
 
 
 def start_create_task(update, context):
@@ -274,16 +247,19 @@ def create_task_in_db(update, context):
     task_is_regular = 1 if context.user_data['task_is_regular'] == 'Регулярная' else 0
     task_is_endless = 1 if context.user_data.get('task_is_endless', '') == 'Бесконечная' else 0
     task_set_time = datetime.datetime.now(gettz(context.chat_data['timezone']))
-    tz_f = task_set_time.isoformat()[task_set_time.isoformat().rfind('+'):]
-    print(tz_f)
+    tz_f = pytz.timezone(context.chat_data['timezone'])
     task_regularity = context.user_data.get('task_regularity', '')
     task_days = context.user_data.get('task_days', '')
     if task_is_regular:
-        task_do_time = datetime.datetime.strptime(context.user_data['task_do_time'] + tz_f, '%H:%M').isoformat()
+        do_time_no_tz = datetime.datetime.strptime(str(datetime.date.today()) + " " + context.user_data['task_do_time'],
+                                                   '%Y-%m-%d %H:%M')
+        do_time_full_date = do_time_no_tz.astimezone(tz_f)
+        task_do_time = datetime.datetime.strptime(str(do_time_full_date)[11:16], '%H:%M')
     else:
         task_do_time = ''
     if not task_is_endless:
-        task_finish_time = datetime.datetime.strptime(context.user_data['task_finish_time'] + tz_f, '%d.%m.%y %H:%M')
+        finish_time_no_tz = datetime.datetime.strptime(context.user_data['task_finish_time'], '%d.%m.%y %H:%M')
+        task_finish_time = finish_time_no_tz.astimezone(tz_f)
     else:
         task_finish_time = ''
     task_is_finished = 0
@@ -377,13 +353,6 @@ def main():
     dp = updater.dispatcher
     # dp.add_handler(CommandHandler("start", start, pass_chat_data=True))
     dp.add_handler(CommandHandler("unfinished_tasks", unfinished_tasks))
-    dp.add_handler(CommandHandler("set", set_timer,
-                                  pass_args=True,
-                                  pass_job_queue=True,
-                                  pass_chat_data=True))
-    dp.add_handler(CommandHandler("unset", unset,
-                                  pass_chat_data=True)
-                   )
     dp.add_handler(PollAnswerHandler(receive_poll_answer))
     conv_handler = ConversationHandler(
 
