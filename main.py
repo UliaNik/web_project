@@ -14,7 +14,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 TOKEN = 'BOT_TOKEN'
-DEFAULT = datetime.datetime(2003, 9, 25)
 DAYS_OF_WEEK = {'Понедельник': 0, "Вторник": 1, "Среда": 2, "Четверг": 3,
                 "Пятница": 4, "Суббота": 5, "Воскресенье": 6}
 
@@ -69,8 +68,6 @@ def get_user_timezone(update, context):
             tz = 'Etc/GMT+' + time[2]
         else:
             tz = 'Etc/GMT-' + time[2]
-        # tf = TimezoneFinder()
-        # tz2 = tf.timezone_at(lng=float(ll[0]), lat=float(ll[1]))
         context.chat_data['timezone'] = tz
         print(tz)
         update.message.reply_text(
@@ -82,10 +79,32 @@ def get_user_timezone(update, context):
     return 1
 
 
+def check_if_finish(context):
+    today = datetime.date.today()
+    con = sqlite3.connect("tasks_db.sqlite")
+    cur = con.cursor()
+    result = cur.execute("""SELECT name FROM tasks
+                            WHERE finish_time = ?""", (today,)).fetchall()
+    if result:
+        for elem in result:
+            remove_job_if_exists(elem, context)
+            cur.execute("""UPDATE tasks
+                           SET is_finished = 1
+                           WHERE name = ?""", (elem,))
+            con.commit()
+    con.close()
+
+
 def start(update, context):
     update.message.reply_text(
-        "Здравствуйте! Я ваш персональный бот для тайм-менеджмента. Я помогу вам эффективнее распоряжаться вашим временем"
-        "Вот список того, что я умею:")
+        "Здравствуйте! Я ваш персональный бот для тайм-менеджмента. Я помогу вам эффективнее распоряжаться вашим временем\n\n"
+        "Вот список того, что я умею:\n"
+        "/start: приветствие, описание, список функций\n"
+        "/create_task: создать задачу \n"
+        "/finish_task [имя задачи]: завершить задачу\n"
+        "/delete_task [имя задачи]: удалить задачу\n"
+        "/all_tasks [дата]: вывести список задач на заданный день\n"
+        "/unfinished_tasks[дата]: вывести список невыполненных задач на заданный день")
     con = sqlite3.connect("tasks_db.sqlite")
     cur = con.cursor()
     cur.execute("""CREATE TABLE IF NOT EXISTS tasks(
@@ -100,7 +119,10 @@ def start(update, context):
                             finish_time TEXT,
                             is_finished INTEGER);""")
     con.close()
+    chat_id = update.message.chat_id
+    time = datetime.time(hour=00, minute=1)
     if not context.chat_data.get('timezone', 0):
+        context.job_queue.run_daily(check_if_finish, time, context=chat_id, name='check_if_finish')
         update.message.reply_text(
             "Чтобы правильно работать, мне необходимо знать Ваш часовой пояс. В каком городе вы находитесь?")
         return 1
@@ -124,9 +146,13 @@ def start_create_task(update, context):
     return 1
 
 
-def stop_create_task(update, context):
-    update.message.reply_text(
-        "Задача удалена")
+def stop_conversation(update, context):
+    fox_request = f"https://randomfox.ca/floof"
+    response = requests.get(fox_request)
+    json_response = response.json()
+    url = json_response["image"]
+    context.bot.send_photo(chat_id=get_chat_id(update, context),
+                           photo=url, caption="Действие прекращено.")
     return ConversationHandler.END
 
 
@@ -171,7 +197,12 @@ def get_one_date(update, context):
 def get_one_time(update, context):
     context.user_data['task_finish_time'] = context.user_data.get('task_finish_time') + ' ' + update.message.text
     create_task_in_db(update, context)
-    update.message.reply_text("Задача создана!")
+    fox_request = f"https://randomfox.ca/floof"
+    response = requests.get(fox_request)
+    json_response = response.json()
+    url = json_response["image"]
+    context.bot.send_photo(chat_id=get_chat_id(update, context),
+                           photo=url, caption="Задача создана!")
     return ConversationHandler.END
 
 
@@ -184,44 +215,36 @@ def get_reg_regularity(update, context):
             f"Введите даты через пробел.")
         return 6
     if context.user_data['task_do_time'] == 'В определённые дни недели':
-        days_of_week_poll(update, context)
         context.user_data['task_regularity'] = 'week_daily'
+        update.message.reply_text(
+            f"По каким дням недели нужно выполнять {context.user_data['task_name']}?\n"
+            f"Введите названия дней недели через пробел.")
+        return 7
     else:
         context.user_data['task_regularity'] = 'daily'
     update.message.reply_text(
         f"Во сколько нужно выполнять {context.user_data['task_name']}?\n"
         f"Введите время.")
-    return 7
+    return 8
 
 
-def days_of_week_poll(update, context):
-    question = f"По каким дням нужно выполнять {context.user_data['task_name']}?"
-    options = ['Понедельник', "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
-    message = context.bot.send_poll(chat_id=get_chat_id(update, context),
-                                    question=question, options=options, type=Poll.REGULAR,
-                                    allows_multiple_answers=True)
-
-    payload = {
-        message.poll.id: {
-            "questions": options,
-            "message_id": message.message_id,
-            "chat_id": update.effective_chat.id,
-            "answers": 0,
-        }
-    }
-    context.bot_data.update(payload)
-
-
-def receive_poll_answer(update, context):
-    answer = update.poll_answer
-    poll_id = answer.poll_id
-    questions = context.bot_data[poll_id]["questions"]
-    selected_options = answer.option_ids
-    days = []
-    for question_id in selected_options:
-        days.append(questions[question_id])
-    print(str([DAYS_OF_WEEK[x] for x in days]))
-    context.user_data['task_days'] = str([DAYS_OF_WEEK[x] for x in days])
+def get_week_days(update, context):
+    days = update.message.text.split()
+    task_days = ''
+    for elem in days:
+        td = DAYS_OF_WEEK.get(elem.capitalize(), '')
+        if td == '':
+            update.message.reply_text(
+                "Что-то пошло не так.\n"
+                "Возможно, вы допустили опечатку в названии дня недели.\n"
+                "Попробуйте ещё раз.")
+            return 7
+        task_days += str(td)
+    context.user_data['task_days'] = task_days
+    update.message.reply_text(
+        f"Во сколько нужно выполнять {context.user_data['task_name']}?\n"
+        f"Введите время.")
+    return 8
 
 
 def get_reg_month_dates(update, context):
@@ -229,17 +252,14 @@ def get_reg_month_dates(update, context):
     update.message.reply_text(
         f"Во сколько нужно выполнять {context.user_data['task_name']}?\n"
         f"Введите время.")
-    return 7
+    return 8
 
 
 def get_reg_time(update, context):
-    if context.user_data['task_do_time'] == 'Каждый месяц':
-        context.user_data['task_do_time'] = context.user_data.get('task_do_time') + ' ' + update.message.text
-    else:
-        context.user_data['task_do_time'] = update.message.text
+    context.user_data['task_do_time'] = update.message.text
     update.message.reply_text(
         f"Эта задача конечная или бесконечная?", reply_markup=markup_3)
-    return 8
+    return 9
 
 
 def get_if_endless(update, context):
@@ -248,17 +268,27 @@ def get_if_endless(update, context):
         update.message.reply_text(
             f"Когда нужно перестать выполнять {context.user_data['task_name']}?\n"
             f"Введите дату.")
-        return 9
+        return 10
     else:
         create_task_in_db(update, context)
-        update.message.reply_text("Задача создана!")
+        fox_request = f"https://randomfox.ca/floof"
+        response = requests.get(fox_request)
+        json_response = response.json()
+        url = json_response["image"]
+        context.bot.send_photo(chat_id=get_chat_id(update, context),
+                               photo=url, caption="Задача создана!")
         return ConversationHandler.END
 
 
 def get_reg_end_date(update, context):
     context.user_data['task_finish_time'] = update.message.text
     create_task_in_db(update, context)
-    update.message.reply_text("Задача создана!")
+    fox_request = f"https://randomfox.ca/floof"
+    response = requests.get(fox_request)
+    json_response = response.json()
+    url = json_response["image"]
+    context.bot.send_photo(chat_id=get_chat_id(update, context),
+                           photo=url, caption="Задача создана!")
     return ConversationHandler.END
 
 
@@ -273,14 +303,17 @@ def create_task_in_db(update, context):
     if task_is_regular:
         do_time_no_tz = datetime.datetime.strptime(str(datetime.date.today()) + " " + context.user_data['task_do_time'],
                                                    '%Y-%m-%d %H:%M')
-        do_time_full_date = do_time_no_tz.astimezone(tz_f)
-        task_do_time = datetime.datetime.strptime(str(do_time_full_date)[11:16], '%H:%M')
+        task_do_time = do_time_no_tz.astimezone(tz_f)
+        task_do_time_short = datetime.datetime.strptime(str(task_do_time)[11:16], '%H:%M')
     else:
         task_do_time = ''
     if not task_is_endless:
-        finish_time_no_tz = datetime.datetime.strptime(context.user_data['task_finish_time'], '%d.%m.%y %H:%M')
+        if task_is_regular:
+            finish_time_no_tz = datetime.datetime.strptime(context.user_data['task_finish_time'] + " " + "00:00",
+                                                           '%d.%m.%y %H:%M')
+        else:
+            finish_time_no_tz = datetime.datetime.strptime(context.user_data['task_finish_time'], '%d.%m.%y %H:%M')
         task_finish_time = finish_time_no_tz.astimezone(tz_f)
-        print(type(task_finish_time))
     else:
         task_finish_time = ''
     task_is_finished = 0
@@ -299,19 +332,18 @@ def create_task_in_db(update, context):
         if task_regularity == 'monthly':
             dates = [int(x) for x in task_days.split()]
             for date in dates:
-                context.job_queue.run_monthly(remind, task_do_time, day=date, context=chat_id, name=task_name)
+                context.job_queue.run_monthly(remind, task_do_time_short, day=date, context=chat_id, name=task_name)
         elif task_regularity == 'week_daily':
             week_days = tuple(int(x) for x in task_days)
-            print(week_days)
-            context.job_queue.run_daily(remind, task_do_time, days=week_days, context=chat_id, name=task_name)
+            context.job_queue.run_daily(remind, task_do_time_short, days=week_days, context=chat_id, name=task_name)
         else:
-            context.job_queue.run_daily(remind, task_do_time, context=chat_id, name=task_name)
+            context.job_queue.run_daily(remind, task_do_time_short, context=chat_id, name=task_name)
     else:
         context.job_queue.run_once(remind, task_finish_time, context=chat_id, name=task_name)
     context.user_data.clear()
 
 
-def finish_task(update, context):  # нужно ли?
+def finish_task(update, context):
     task_name = context.args[0]
     job_removed = remove_job_if_exists(task_name, context)
     text = 'Задание завершено!' if job_removed else 'У вас нет такой задачи'
@@ -321,17 +353,7 @@ def finish_task(update, context):  # нужно ли?
     cur.execute("""UPDATE tasks
                    SET is_finished = 1
                    WHERE name = ?""", (task_name,))
-    con.close()
-
-
-def change_task(update, context):
-    task_name = context.args[0]
-    task_do_time = ''
-    con = sqlite3.connect("tasks_db.sqlite")
-    cur = con.cursor()
-    cur.execute("""UPDATE tasks
-                   SET do_time = ?
-                   WHERE name = ?""", (task_do_time, task_name))
+    con.commit()
     con.close()
 
 
@@ -344,6 +366,7 @@ def delete_task(update, context):
     cur = con.cursor()
     cur.execute("""DELETE from tasks
                    WHERE name = ?""", (task_name,))
+    con.commit()
     con.close()
 
 
@@ -354,16 +377,64 @@ def unfinished_tasks(update, context):
     time_no_tz = datetime.datetime.strptime(period, '%d.%m.%y %H:%M')
     time_2 = time_no_tz.astimezone(tz_f)
     time_1 = time_2 - datetime.timedelta(days=1)
+    week_day = time_no_tz.weekday()
     con = sqlite3.connect("tasks_db.sqlite")
     cur = con.cursor()
-    result = cur.execute("""SELECT name, finish_time FROM tasks
-                            WHERE is_finished = 0
-                            AND strftime('%Y-%m-%d %H:%M', finish_time) 
-                            BETWEEN strftime('%Y-%m-%d %H:%M', ?)
-                            AND strftime('%Y-%m-%d %H:%M', ?)""", (time_1, time_2)).fetchall()
-    print(time_1, time_2, result)
-    con.close()  # возникнет ошибка для регулярных бесконечных задач?
+    result_1 = cur.execute("""SELECT name, finish_time 
+                              FROM tasks
+                              WHERE is_finished = 0
+                              AND strftime('%Y-%m-%d %H:%M', finish_time) 
+                              BETWEEN strftime('%Y-%m-%d %H:%M', ?)
+                              AND strftime('%Y-%m-%d %H:%M', ?)""", (time_1, time_2)).fetchall()
+    result_2 = cur.execute("""SELECT name, do_time 
+                              FROM tasks
+                              WHERE is_regular = 1
+                              AND is_finished = 0 
+                              AND regularity = ?
+                              AND is_endless = 1""", ('daily',)).fetchall()
+    result_3 = cur.execute("""SELECT name, do_time 
+                              FROM tasks
+                              WHERE is_regular = 1 
+                              AND is_finished = 0 
+                              AND regularity = ?
+                              AND days LIKe ?
+                              AND is_endless = 1""", ('monthly', '%' + given_date[:2] + '%')).fetchall()
+    result_4 = cur.execute("""SELECT name, do_time FROM tasks
+                              WHERE is_regular = 1 
+                              AND regularity = ?
+                              AND days LIKE ?
+                              AND is_finished = 0
+                              AND is_endless = 1""",
+                           ('week_daily', '%' + str(week_day) + '%')).fetchall()
+    result_5 = cur.execute("""SELECT name, do_time FROM tasks
+                                  WHERE is_regular = 1 
+                                  AND regularity = ?
+                                  AND is_finished = 0
+                                  AND is_endless = 0
+                                  AND strftime('%Y-%m-%d %H:%M', finish_time) 
+                                  > strftime('%Y-%m-%d %H:%M', ?)""", ('daily', time_1.date())).fetchall()
+    result_6 = cur.execute("""SELECT name, do_time FROM tasks
+                                  WHERE is_regular = 1 
+                                  AND regularity = ?
+                                  AND days LIKE ?
+                                  AND is_finished = 0
+                                  AND is_endless = 0
+                                  AND strftime('%Y-%m-%d %H:%M', finish_time) 
+                                  > strftime('%Y-%m-%d %H:%M', ?)""", ('monthly', '%' + given_date[:2] + '%',
+                                                                       time_1.date())).fetchall()
+    result_7 = cur.execute("""SELECT name, do_time FROM tasks
+                                  WHERE is_regular = 1 
+                                  AND regularity = ?
+                                  AND days LIKE ?
+                                  AND is_finished = 0
+                                  AND is_endless = 0
+                                  AND strftime('%Y-%m-%d %H:%M', finish_time) 
+                                  > strftime('%Y-%m-%d %H:%M', ?)""",
+                           ('week_daily', '%' + str(week_day) + '%')).fetchall()
+    con.close()
     text = [f'Незавершённые задачи {given_date}:']
+    result = result_2 + result_1 + result_3 + result_4 + result_5 + result_6 + result_7
+    result.sort(key=lambda x: datetime.datetime.strptime(x[1], '%Y-%m-%d %H:%M:%S%z').time())
     for elem in result:
         time_no_tz = datetime.datetime.strptime(elem[1], '%Y-%m-%d %H:%M:%S%z')
         time = time_no_tz.astimezone(tz_f)
@@ -373,22 +444,66 @@ def unfinished_tasks(update, context):
 
 def all_tasks(update, context):
     tz_f = pytz.timezone(context.chat_data['timezone'])
-    period = context.args[0] + ' 23:59'
+    given_date = context.args[0]
+    period = given_date + ' 23:59'
     time_no_tz = datetime.datetime.strptime(period, '%d.%m.%y %H:%M')
     time_2 = time_no_tz.astimezone(tz_f)
     time_1 = time_2 - datetime.timedelta(days=1)
+    week_day = time_no_tz.weekday()
     con = sqlite3.connect("tasks_db.sqlite")
     cur = con.cursor()
-    result = cur.execute("""SELECT name, finish_time FROM tasks
-                            WHERE strftime('%Y-%m-%d %H:%M', finish_time) 
-                            BETWEEN strftime('%Y-%m-%d %H:%M', ?)
-                            AND strftime('%Y-%m-%d %H:%M', ?)""", (time_1, time_2)).fetchall()
-    print(time_1, time_2, result)
-    con.close()  # возникнет ошибка для регулярных бесконечных задач?
-    text = [f'Все задачи {context.arg[0]}:']
+    result_1 = cur.execute("""SELECT name, finish_time FROM tasks
+                              WHERE is_regular = 0
+                              AND strftime('%Y-%m-%d %H:%M', finish_time) 
+                              BETWEEN strftime('%Y-%m-%d %H:%M', ?)
+                              AND strftime('%Y-%m-%d %H:%M', ?)""", (time_1, time_2)).fetchall()
+    result_2 = cur.execute("""SELECT name, do_time 
+                              FROM tasks
+                              WHERE is_regular = 1
+                              AND is_endless = 1 
+                              AND regularity = ?""", ('daily',)).fetchall()
+    result_3 = cur.execute("""SELECT name, do_time 
+                              FROM tasks
+                              WHERE is_regular = 1 
+                              AND is_endless = 1 
+                              AND regularity = ?
+                              AND days LIKe ?""", ('monthly', '%' + given_date[:2] + '%')).fetchall()
+    result_4 = cur.execute("""SELECT name, do_time FROM tasks
+                              WHERE is_regular = 1 
+                              AND regularity = ?
+                              AND days LIKE ?
+                              AND is_endless = 1""",
+                           ('week_daily', '%' + str(week_day) + '%')).fetchall()
+    result_5 = cur.execute("""SELECT name, do_time FROM tasks
+                              WHERE is_regular = 1 
+                              AND regularity = ?
+                              AND is_endless = 0
+                              AND strftime('%Y-%m-%d %H:%M', finish_time) 
+                              > strftime('%Y-%m-%d %H:%M', ?)""", ('daily', time_1.date())).fetchall()
+    result_6 = cur.execute("""SELECT name, do_time FROM tasks
+                              WHERE is_regular = 1 
+                              AND regularity = ?
+                              AND days LIKE ?
+                              AND is_endless = 0
+                              AND strftime('%Y-%m-%d %H:%M', finish_time) 
+                              > strftime('%Y-%m-%d %H:%M', ?)""", ('monthly', '%' + given_date[:2] + '%',
+                                                                   time_1.date())).fetchall()
+    result_7 = cur.execute("""SELECT name, do_time FROM tasks
+                              WHERE is_regular = 1 
+                              AND regularity = ?
+                              AND days LIKE ?
+                              AND is_endless = 0
+                              AND strftime('%Y-%m-%d %H:%M', finish_time) 
+                              > strftime('%Y-%m-%d %H:%M', ?)""", ('week_daily', '%' + str(week_day) + '%',
+                                                                   time_1.date())).fetchall()
+    con.close()
+    text = [f'Все задачи {given_date}:']
+    result = result_2 + result_1 + result_3 + result_4 + result_5 + result_6 + result_7
+    result.sort(key=lambda x: datetime.datetime.strptime(x[1], '%Y-%m-%d %H:%M:%S%z').time())
     for elem in result:
-
-        text.append(f"{elem[0]} - {elem[1][11:16]}")
+        time_no_tz = datetime.datetime.strptime(elem[1], '%Y-%m-%d %H:%M:%S%z')
+        time = time_no_tz.astimezone(tz_f)
+        text.append(f"{elem[0]} - {str(time)[11:16]}")
     update.message.reply_text('\n'.join(text))
 
 
@@ -403,7 +518,6 @@ def main():
     # dp.add_handler(CommandHandler("start", start, pass_chat_data=True))
     dp.add_handler(CommandHandler("unfinished_tasks", unfinished_tasks))
     dp.add_handler(CommandHandler("all_tasks", all_tasks))
-    dp.add_handler(PollAnswerHandler(receive_poll_answer))
     conv_handler = ConversationHandler(
 
         entry_points=[CommandHandler('create_task', start_create_task)],
@@ -415,12 +529,13 @@ def main():
             4: [MessageHandler(Filters.text & ~Filters.command, get_one_time, pass_user_data=True)],
             5: [MessageHandler(Filters.text & ~Filters.command, get_reg_regularity, pass_user_data=True)],
             6: [MessageHandler(Filters.text & ~Filters.command, get_reg_month_dates, pass_user_data=True)],
-            7: [MessageHandler(Filters.text & ~Filters.command, get_reg_time, pass_user_data=True)],
-            8: [MessageHandler(Filters.text & ~Filters.command, get_if_endless, pass_user_data=True)],
-            9: [MessageHandler(Filters.text & ~Filters.command, get_reg_end_date, pass_user_data=True)],
+            7: [MessageHandler(Filters.text & ~Filters.command, get_week_days, pass_user_data=True)],
+            8: [MessageHandler(Filters.text & ~Filters.command, get_reg_time, pass_user_data=True)],
+            9: [MessageHandler(Filters.text & ~Filters.command, get_if_endless, pass_user_data=True)],
+            10: [MessageHandler(Filters.text & ~Filters.command, get_reg_end_date, pass_user_data=True)],
         },
 
-        fallbacks=[CommandHandler('stop', stop_create_task, pass_chat_data=True)]
+        fallbacks=[CommandHandler('stop', stop_conversation, pass_chat_data=True)]
     )
 
     dp.add_handler(conv_handler)
@@ -432,7 +547,7 @@ def main():
             1: [MessageHandler(Filters.text & ~Filters.command, get_user_timezone, pass_chat_data=True)]
         },
 
-        fallbacks=[CommandHandler('stop', stop_create_task, pass_chat_data=True)]
+        fallbacks=[CommandHandler('stop', stop_conversation, pass_chat_data=True)]
     )
 
     dp.add_handler(greeting_handler)
@@ -444,10 +559,11 @@ def main():
             1: [MessageHandler(Filters.text & ~Filters.command, get_user_timezone, pass_chat_data=True)]
         },
 
-        fallbacks=[CommandHandler('stop', stop_create_task, pass_chat_data=True)]
+        fallbacks=[CommandHandler('stop', stop_conversation, pass_chat_data=True)]
     )
 
     dp.add_handler(change_tz_handler)
+
     updater.start_polling()
     updater.idle()
 
