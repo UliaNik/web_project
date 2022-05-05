@@ -50,7 +50,6 @@ def get_user_timezone(update, context):  # вычисляет часовой п�
         else:
             tz = 'Etc/GMT-' + time[2]
         context.chat_data['timezone'] = tz  # сохраняем часовой пояс
-        print(tz)
         update.message.reply_text(
             "Спасибо! Часовой пояс определён.")
         return ConversationHandler.END
